@@ -39,6 +39,8 @@ return array(
 	'fileMissingExport.opt.recycle'			=> "Include recycle bin",
 	'fileMissingExport.opt.history'			=> "Include history versions",
 	'fileMissingExport.opt.batch'			=> "Batch size",
+	'fileMissingExport.opt.trustScan'		=> "Trust this scan; skip a second storage check",
+	'fileMissingExport.opt.trustScanTip'	=> "Cleanup will not probe storage again. Faster. Files restored after the scan may still have their database records deleted (disk files are never deleted).",
 
 	'fileMissingExport.btn.start'			=> "Start",
 	'fileMissingExport.btn.continue'		=> "Continue",

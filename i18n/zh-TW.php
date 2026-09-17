@@ -39,6 +39,8 @@ return array(
 	'fileMissingExport.opt.recycle'			=> "包含回收筒",
 	'fileMissingExport.opt.history'			=> "包含歷史版本",
 	'fileMissingExport.opt.batch'			=> "每批筆數",
+	'fileMissingExport.opt.trustScan'		=> "信任本輪掃描結果，不再二次核對儲存",
+	'fileMissingExport.opt.trustScanTip'	=> "勾選後清理不再探詢儲存確認檔案是否已恢復，會快很多。掃描之後又傳回的檔案，資料庫記錄仍會被刪除（磁碟檔案不會刪）。",
 
 	'fileMissingExport.btn.start'			=> "開始掃描",
 	'fileMissingExport.btn.continue'		=> "繼續",

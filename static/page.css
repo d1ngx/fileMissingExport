@@ -85,5 +85,11 @@
 	line-height: 1.6;
 	margin-bottom: 10px;
 }
+.file-missing-export-page .trust-tip{
+	color: #9a3412;
+	font-size: 12px;
+	line-height: 1.5;
+	margin: 4px 0 8px 22px;
+}
 .file-missing-export-page .danger-box .kui-btn{margin-right: 8px;margin-bottom: 6px;}
 .file-missing-export-page .clean-stat{color: #7f1d1d;font-size: 13px;}

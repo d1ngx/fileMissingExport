@@ -11,6 +11,8 @@ class missingExport{
 	private $stateFile;
 	private $pageNum = 300;
 	private $sliceSec = 8;
+	private $cleanSliceSec = 8;
+	private $cleanBatch = 80;
 	private $storeMap = array();
 	private $nameMap = array();
 	private $userMap = array();
@@ -67,11 +69,13 @@ class missingExport{
 			if ($state && $this->isAlive($state) && $state['status'] == 'running') {
 				show_json(LNG('fileMissingExport.msg.running'), false);
 			}
+			$this->clearPauseFlag();
 			$state = $this->newRun();
 		} else {
 			if ($this->isAlive($state) && $state['status'] == 'running') {
 				show_json(LNG('fileMissingExport.msg.running'), false);
 			}
+			$this->clearPauseFlag();
 			$state['status'] = 'running';
 			$state['error'] = '';
 			$state['heartbeat'] = time();
@@ -81,9 +85,10 @@ class missingExport{
 	}
 
 	public function stop(){
+		$this->writePauseFlag();
 		$state = $this->loadState();
 		if (!$state) return $this->state();
-		if (_get($state, 'cleanStatus') == 'running') {
+		if (_get($state, 'cleanStatus') == 'running' || _get($state, 'cleanStatus') == 'paused') {
 			$state['cleanStatus'] = 'paused';
 			$state['heartbeat'] = time();
 			$this->saveState($state);
@@ -103,6 +108,11 @@ class missingExport{
 		if (!$state) show_json(LNG('fileMissingExport.msg.noTask'), false);
 		if ($state['status'] == 'paused') return $this->state();
 		if ($state['status'] == 'done') return $this->state();
+		if ($this->pauseRequested()) {
+			$state['status'] = 'paused';
+			$this->saveState($state);
+			return $this->state();
+		}
 
 		$state['status'] = 'running';
 		$state['heartbeat'] = time();
@@ -157,6 +167,10 @@ class missingExport{
 			if (_get($state, 'cleanStatus') != 'paused') {
 				show_json(LNG('fileMissingExport.clean.needScan'), false);
 			}
+			$this->clearPauseFlag();
+			if (isset($this->plugin->in['trustScan'])) {
+				$state['cleanTrustScan'] = intval(_get($this->plugin->in, 'trustScan', 0)) ? 1 : 0;
+			}
 			$state['cleanStatus'] = 'running';
 			$state['heartbeat'] = time();
 			$this->saveState($state);
@@ -189,6 +203,8 @@ class missingExport{
 			show_json(LNG('fileMissingExport.clean.already'), false);
 		}
 
+		$this->clearPauseFlag();
+		$state['cleanTrustScan'] = intval(_get($this->plugin->in, 'trustScan', 0)) ? 1 : 0;
 		$state['cleanStatus'] = 'running';
 		$state['cleanByte'] = 0;
 		$state['cleanProcessed'] = 0;
@@ -200,7 +216,7 @@ class missingExport{
 		$state['cleanStartedAt'] = time();
 		$state['heartbeat'] = time();
 		$this->saveState($state);
-		$this->cleanLog($state, 'START runId='.$state['runId'].' missing='.$state['missing']);
+		$this->cleanLog($state, 'START runId='.$state['runId'].' missing='.$state['missing'].' trustScan='.intval($state['cleanTrustScan']));
 		return $this->state();
 	}
 
@@ -212,23 +228,29 @@ class missingExport{
 		if (_get($state, 'cleanStatus') != 'running') {
 			show_json(LNG('fileMissingExport.clean.needScan'), false);
 		}
+		if ($this->pauseRequested()) {
+			$state['cleanStatus'] = 'paused';
+			$this->saveState($state);
+			return $this->state();
+		}
 
-		$state['heartbeat'] = time();
-		$this->saveState($state);
-		$this->storeMap = $this->loadStores();
-		$deadline = microtime(true) + 2;
-		$batch = 25;
+		$deadline = microtime(true) + $this->cleanSliceSec;
 		$parents = array();
-		$did = 0;
+		$sliceFrom = intval(_get($state, 'cleanProcessed', 0));
 
 		try {
 			while (microtime(true) < $deadline) {
+				if ($this->pauseRequested()) {
+					$state['cleanStatus'] = 'paused';
+					$this->saveState($state);
+					break;
+				}
 				$fresh = $this->loadState();
 				if ($fresh && _get($fresh, 'cleanStatus') == 'paused') {
 					$state = $fresh;
 					break;
 				}
-				$rows = $this->readJsonlBatch($state, $batch);
+				$rows = $this->readJsonlBatch($state, $this->cleanBatch);
 				if (!$rows) {
 					$state['cleanStatus'] = 'done';
 					$state['cleanFinishedAt'] = time();
@@ -238,14 +260,18 @@ class missingExport{
 					break;
 				}
 				$this->cleanRows($rows, $state, $parents);
-				$did += count($rows);
 				$state['heartbeat'] = time();
 				$state['updatedAt'] = time();
 				$this->saveState($state);
-				if ((microtime(true) >= $deadline) || $did >= 80) break;
 			}
 			if ($parents && _get($state, 'cleanStatus') != 'done') {
 				$this->folderSizeReset($parents);
+			}
+			if (_get($state, 'cleanStatus') == 'running') {
+				$did = intval($state['cleanProcessed']) - $sliceFrom;
+				if ($did > 0) {
+					$this->cleanLog($state, 'PROG processed='.intval($state['cleanProcessed']).'/'.intval($state['cleanTotal']).' +'.$did.' source='.intval($state['cleanDeletedSource']).' file='.intval($state['cleanDeletedFile']).' skip='.intval($state['cleanSkipped']));
+				}
 			}
 		} catch (Exception $e) {
 			$state['cleanStatus'] = 'paused';
@@ -750,6 +776,10 @@ class missingExport{
 	}
 
 	private function cleanRows($rows, &$state, &$parents){
+		$fileIds = array();
+		$sourceIds = array();
+		$historyIds = array();
+		$orphanFileIds = array();
 		foreach ($rows as $row) {
 			$state['cleanProcessed'] = intval(_get($state, 'cleanProcessed', 0)) + 1;
 			$reason = _get($row, 'reason', '');
@@ -763,90 +793,168 @@ class missingExport{
 			$kind = _get($row, 'kind', 'file');
 			$storePath = _get($row, 'storePath', '');
 
-			if ($reason === 'physical' && $storePath) {
-				try {
-					if (IO::exist($storePath)) {
-						$state['cleanSkipped']++;
-						continue;
-					}
-				} catch (Exception $e) {
-					$state['cleanSkipped']++;
-					continue;
-				}
+			if ($reason === 'physical' && $storePath && !$this->trustScan($state) && $this->physicalStillExists($storePath)) {
+				$state['cleanSkipped']++;
+				continue;
 			}
 
 			if ($kind === 'history' && $historyID > 0) {
-				$cnt = Model('SourceHistory')->where(array('id' => $historyID))->delete();
-				$state['cleanDeletedHistory'] += intval($cnt);
-				if ($fileID > 0) $this->deleteOrphanFile($fileID, $state);
+				$historyIds[] = $historyID;
+				if ($fileID > 0) $orphanFileIds[] = $fileID;
 				continue;
 			}
-
 			if ($fileID > 0 && $reason !== 'fileMissing') {
-				$this->deleteByFileID($fileID, $state, $parents);
+				$fileIds[] = $fileID;
 				continue;
 			}
 			if ($sourceID > 0) {
-				$this->deleteBySourceID($sourceID, $state, $parents);
+				$sourceIds[] = $sourceID;
 			} else {
 				$state['cleanSkipped']++;
 			}
 		}
+		$this->deleteByFileIDs($fileIds, $state, $parents);
+		$this->deleteBySourceIDs($sourceIds, $state, $parents);
+		$this->deleteHistories($historyIds, $state);
+		$this->deleteOrphanFiles($orphanFileIds, $state);
 	}
 
-	private function deleteByFileID($fileID, &$state, &$parents){
-		$where = array('fileID' => $fileID);
-		$modelSource = Model('Source');
-		$sourceList = $modelSource->where($where)->select();
-		$sourceList = $sourceList ? $sourceList : array();
-		if (!$sourceList && !Model('File')->where($where)->find() && !Model('SourceHistory')->where($where)->find()) {
-			$state['cleanSkipped']++;
-			return;
-		}
-		$sourceIds = array();
-		foreach ($sourceList as $item) {
-			$sourceIds[] = intval($item['sourceID']);
-			$parents[] = intval($item['parentID']);
-		}
-		$this->deleteShares($sourceIds);
-		if ($sourceIds) {
-			Model('SourceRecycle')->where(array('sourceID' => array('in', $sourceIds)))->delete();
-		}
-		$cntSource = $modelSource->where($where)->delete();
-		$cntHistory = Model('SourceHistory')->where($where)->delete();
-		Model('io_file_meta')->where($where)->delete();
-		Model('io_file_contents')->where($where)->delete();
-		Model('share_report')->where($where)->delete();
-		$cntFile = Model('File')->where($where)->delete();
-		$state['cleanDeletedSource'] += intval($cntSource);
-		$state['cleanDeletedHistory'] += intval($cntHistory);
-		$state['cleanDeletedFile'] += intval($cntFile);
+	private function trustScan($state){
+		return intval(_get($state, 'cleanTrustScan', 0)) === 1;
 	}
 
-	private function deleteBySourceID($sourceID, &$state, &$parents){
-		$info = Model('Source')->where(array('sourceID' => $sourceID))->find();
-		if (!$info) {
-			$state['cleanSkipped']++;
-			return;
-		}
-		$this->deleteShares(array($sourceID));
-		Model('SourceRecycle')->where(array('sourceID' => $sourceID))->delete();
-		$fileID = intval($info['fileID']);
-		$cnt = Model('Source')->where(array('sourceID' => $sourceID))->delete();
-		$state['cleanDeletedSource'] += intval($cnt);
-		if ($fileID > 0) $this->deleteOrphanFile($fileID, $state);
-		$parents[] = intval($info['parentID']);
+	private function pauseFlag(){
+		return $this->workDir.'pause.flag';
 	}
 
-	private function deleteOrphanFile($fileID, &$state){
-		$where = array('fileID' => $fileID);
-		if (Model('Source')->where($where)->find()) return;
-		if (Model('SourceHistory')->where($where)->find()) return;
-		Model('io_file_meta')->where($where)->delete();
-		Model('io_file_contents')->where($where)->delete();
-		Model('share_report')->where($where)->delete();
-		$cnt = Model('File')->where($where)->delete();
-		$state['cleanDeletedFile'] += intval($cnt);
+	private function pauseRequested(){
+		return is_file($this->pauseFlag());
+	}
+
+	private function writePauseFlag(){
+		@file_put_contents($this->pauseFlag(), strval(time()));
+	}
+
+	private function clearPauseFlag(){
+		$flag = $this->pauseFlag();
+		if (is_file($flag)) @unlink($flag);
+	}
+
+	private function physicalStillExists($storePath){
+		$key = strval($storePath);
+		if (isset($this->existCache[$key])) {
+			return $this->existCache[$key] ? true : false;
+		}
+		try {
+			$exists = IO::exist($storePath) ? 1 : 0;
+		} catch (Exception $e) {
+			$this->existCache[$key] = 1;
+			return true;
+		}
+		$this->existCache[$key] = $exists;
+		if (count($this->existCache) > 20000) {
+			$this->existCache = array_slice($this->existCache, -8000, null, true);
+		}
+		return $exists ? true : false;
+	}
+
+	private function deleteByFileIDs($fileIds, &$state, &$parents){
+		$fileIds = array_values(array_unique(array_filter($fileIds)));
+		if (!$fileIds) return;
+		foreach (array_chunk($fileIds, 200) as $chunk) {
+			$where = array('fileID' => array('in', $chunk));
+			$sourceList = Model('Source')->where($where)->select();
+			$sourceList = $sourceList ? $sourceList : array();
+			$sourceIds = array();
+			foreach ($sourceList as $item) {
+				$sourceIds[] = intval($item['sourceID']);
+				$parents[] = intval($item['parentID']);
+			}
+			$hasFile = Model('File')->where($where)->find();
+			$hasHistory = Model('SourceHistory')->where($where)->find();
+			if (!$sourceList && !$hasFile && !$hasHistory) {
+				$state['cleanSkipped'] += count($chunk);
+				continue;
+			}
+			$this->deleteShares($sourceIds);
+			if ($sourceIds) {
+				Model('SourceRecycle')->where(array('sourceID' => array('in', $sourceIds)))->delete();
+			}
+			$cntSource = Model('Source')->where($where)->delete();
+			$cntHistory = Model('SourceHistory')->where($where)->delete();
+			Model('io_file_meta')->where($where)->delete();
+			Model('io_file_contents')->where($where)->delete();
+			Model('share_report')->where($where)->delete();
+			$cntFile = Model('File')->where($where)->delete();
+			$state['cleanDeletedSource'] += intval($cntSource);
+			$state['cleanDeletedHistory'] += intval($cntHistory);
+			$state['cleanDeletedFile'] += intval($cntFile);
+		}
+	}
+
+	private function deleteBySourceIDs($sourceIds, &$state, &$parents){
+		$sourceIds = array_values(array_unique(array_filter($sourceIds)));
+		if (!$sourceIds) return;
+		$orphanFileIds = array();
+		foreach (array_chunk($sourceIds, 200) as $chunk) {
+			$list = Model('Source')->where(array('sourceID' => array('in', $chunk)))->select();
+			$list = $list ? $list : array();
+			$found = array();
+			foreach ($list as $info) {
+				$sid = intval($info['sourceID']);
+				$found[$sid] = 1;
+				$parents[] = intval($info['parentID']);
+				$fid = intval($info['fileID']);
+				if ($fid > 0) $orphanFileIds[] = $fid;
+			}
+			foreach ($chunk as $sid) {
+				if (empty($found[$sid])) $state['cleanSkipped']++;
+			}
+			if (!$list) continue;
+			$ids = array_keys($found);
+			$this->deleteShares($ids);
+			Model('SourceRecycle')->where(array('sourceID' => array('in', $ids)))->delete();
+			$cnt = Model('Source')->where(array('sourceID' => array('in', $ids)))->delete();
+			$state['cleanDeletedSource'] += intval($cnt);
+		}
+		$this->deleteOrphanFiles($orphanFileIds, $state);
+	}
+
+	private function deleteHistories($historyIds, &$state){
+		$historyIds = array_values(array_unique(array_filter($historyIds)));
+		if (!$historyIds) return;
+		foreach (array_chunk($historyIds, 200) as $chunk) {
+			$cnt = Model('SourceHistory')->where(array('id' => array('in', $chunk)))->delete();
+			$state['cleanDeletedHistory'] += intval($cnt);
+		}
+	}
+
+	private function deleteOrphanFiles($fileIds, &$state){
+		$fileIds = array_values(array_unique(array_filter($fileIds)));
+		if (!$fileIds) return;
+		foreach (array_chunk($fileIds, 200) as $chunk) {
+			$where = array('fileID' => array('in', $chunk));
+			$used = array();
+			$sources = Model('Source')->where($where)->select();
+			if ($sources) {
+				foreach ($sources as $row) $used[intval($row['fileID'])] = 1;
+			}
+			$hist = Model('SourceHistory')->where($where)->select();
+			if ($hist) {
+				foreach ($hist as $row) $used[intval($row['fileID'])] = 1;
+			}
+			$orphans = array();
+			foreach ($chunk as $fid) {
+				if (empty($used[$fid])) $orphans[] = $fid;
+			}
+			if (!$orphans) continue;
+			$ow = array('fileID' => array('in', $orphans));
+			Model('io_file_meta')->where($ow)->delete();
+			Model('io_file_contents')->where($ow)->delete();
+			Model('share_report')->where($ow)->delete();
+			$cnt = Model('File')->where($ow)->delete();
+			$state['cleanDeletedFile'] += intval($cnt);
+		}
 	}
 
 	private function deleteShares($sourceIds){
@@ -934,6 +1042,7 @@ class missingExport{
 			'cleanDeletedHistory' => 0,
 			'cleanSkipped' => 0,
 			'cleanProcessed' => 0,
+			'cleanTrustScan' => 0,
 			'canClean' => false,
 		);
 	}
@@ -947,6 +1056,10 @@ class missingExport{
 	}
 
 	private function saveState($state){
+		if ($this->pauseRequested()) {
+			if (_get($state, 'cleanStatus') == 'running') $state['cleanStatus'] = 'paused';
+			if (_get($state, 'status') == 'running') $state['status'] = 'paused';
+		}
 		$tmp = $this->stateFile.'.tmp';
 		$json = json_encode($state);
 		if (defined('JSON_UNESCAPED_UNICODE')) {

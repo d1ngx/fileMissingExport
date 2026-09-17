@@ -39,6 +39,8 @@ return array(
 	'fileMissingExport.opt.recycle'			=> "包含回收站",
 	'fileMissingExport.opt.history'			=> "包含历史版本",
 	'fileMissingExport.opt.batch'			=> "每批条数",
+	'fileMissingExport.opt.trustScan'		=> "信任本轮扫描结果，不再二次核对存储",
+	'fileMissingExport.opt.trustScanTip'	=> "勾选后清理不再访问存储确认文件是否已恢复，会快很多。扫描之后又传回的文件，数据库记录仍会被删除（磁盘文件不会删）。",
 
 	'fileMissingExport.btn.start'			=> "开始扫描",
 	'fileMissingExport.btn.continue'		=> "继续",

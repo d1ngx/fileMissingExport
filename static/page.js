@@ -51,6 +51,10 @@
 			<div class="danger-box">\
 				<div class="danger-title">'+LNG['fileMissingExport.clean.title']+'</div>\
 				<div class="danger-desc">'+LNG['fileMissingExport.clean.desc']+'</div>\
+				<div class="opt-item mb-10">\
+					<label><input type="checkbox" class="opt-trustScan"> '+LNG['fileMissingExport.opt.trustScan']+'</label>\
+					<div class="trust-tip">'+LNG['fileMissingExport.opt.trustScanTip']+'</div>\
+				</div>\
 				<button type="button" class="kui-btn kui-btn-red act-clean" disabled>'+LNG['fileMissingExport.btn.clean']+'</button>\
 				<button type="button" class="kui-btn act-clean-continue" disabled>'+LNG['fileMissingExport.btn.cleanContinue']+'</button>\
 				<div class="clean-stat mt-10"><span class="clean-status-text">'+LNG['fileMissingExport.clean.status.idle']+'</span> · \
@@ -129,7 +133,8 @@
 		$el.find('.clean-status-text').text(data.cleanStatusText || LNG['fileMissingExport.clean.status.idle']);
 		renderRecent(data.recent || []);
 		var busy = data.status == 'running' || data.cleanStatus == 'running';
-		$el.find('.opt-ioType,.opt-recycle,.opt-history,.opt-batch').prop('disabled', busy);
+		$el.find('.opt-ioType,.opt-recycle,.opt-history,.opt-batch,.opt-trustScan').prop('disabled', busy);
+		if (!busy) $el.find('.opt-trustScan').prop('checked', data.cleanTrustScan == 1);
 		$el.find('.act-clean').prop('disabled', !data.canClean);
 		$el.find('.act-clean-continue').prop('disabled', !data.canCleanContinue);
 	};
@@ -200,7 +205,10 @@
 	var startClean = function(resume){
 		if (resume) {
 			markCleaning();
-			kodApi.requestSend('plugin/fileMissingExport/clean', {resume: 1}, function(result){
+			kodApi.requestSend('plugin/fileMissingExport/clean', {
+				resume: 1,
+				trustScan: $box().find('.opt-trustScan').prop('checked') ? 1 : 0
+			}, function(result){
 				if (!result || !result.code) {
 					looping = false;
 					return Tips.close(result);
@@ -224,7 +232,8 @@
 					resume: 0,
 					runId: runId,
 					confirm: 'DELETE',
-					confirmCount: missing
+					confirmCount: missing,
+					trustScan: $box().find('.opt-trustScan').prop('checked') ? 1 : 0
 				}, function(result){
 					if (!result || !result.code) {
 						looping = false;
