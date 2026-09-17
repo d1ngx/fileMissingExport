@@ -68,4 +68,22 @@
 .file-missing-export-page .status-running{color: #2563eb;}
 .file-missing-export-page .status-done{color: #16a34a;}
 .file-missing-export-page .status-paused{color: #d97706;}
-.file-missing-export-page .status-error{color: #dc2626;}
+.file-missing-export-page .danger-box{
+	margin: 18px 0 18px;
+	padding: 12px 14px;
+	border: 1px solid #fecaca;
+	background: #fef2f2;
+	border-radius: 6px;
+}
+.file-missing-export-page .danger-title{
+	color: #b91c1c;
+	font-weight: 600;
+	margin-bottom: 6px;
+}
+.file-missing-export-page .danger-desc{
+	color: #7f1d1d;
+	line-height: 1.6;
+	margin-bottom: 10px;
+}
+.file-missing-export-page .danger-box .kui-btn{margin-right: 8px;margin-bottom: 6px;}
+.file-missing-export-page .clean-stat{color: #7f1d1d;font-size: 13px;}

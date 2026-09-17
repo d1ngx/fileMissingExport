@@ -59,6 +59,17 @@ class fileMissingExportPlugin extends PluginBase{
 		show_json($this->api()->stop());
 	}
 
+	public function clean(){
+		$this->allow();
+		ignore_timeout();
+		$resume = intval(_get($this->in, 'resume', 0));
+		if ($resume == 2) {
+			show_json($this->api()->cleanSlice());
+			return;
+		}
+		show_json($this->api()->cleanStart());
+	}
+
 	public function download(){
 		$this->allow();
 		$type = Input::get('type', 'in', 'csv', array('csv', 'txt'));

@@ -3,6 +3,7 @@
 	window.__fileMissingExportInited = true;
 
 	var looping = false;
+	var lastState = {};
 	var $box = function(){ return $('.file-missing-export-page'); };
 
 	var panelHtml = function(){
@@ -47,6 +48,17 @@
 				<div class="stat-card"><div class="k">'+LNG['fileMissingExport.stat.total']+'</div><div class="v v-total">0</div></div>\
 				<div class="stat-card"><div class="k">runId</div><div class="v v-runid" style="font-size:13px;word-break:break-all;">-</div></div>\
 			</div>\
+			<div class="danger-box">\
+				<div class="danger-title">'+LNG['fileMissingExport.clean.title']+'</div>\
+				<div class="danger-desc">'+LNG['fileMissingExport.clean.desc']+'</div>\
+				<button type="button" class="kui-btn kui-btn-red act-clean" disabled>'+LNG['fileMissingExport.btn.clean']+'</button>\
+				<button type="button" class="kui-btn act-clean-continue" disabled>'+LNG['fileMissingExport.btn.cleanContinue']+'</button>\
+				<div class="clean-stat mt-10"><span class="clean-status-text">'+LNG['fileMissingExport.clean.status.idle']+'</span> · \
+					'+LNG['fileMissingExport.stat.cleanSource']+' <span class="v-csource">0</span> · \
+					'+LNG['fileMissingExport.stat.cleanFile']+' <span class="v-cfile">0</span> · \
+					'+LNG['fileMissingExport.stat.cleanSkip']+' <span class="v-cskip">0</span>\
+				</div>\
+			</div>\
 			<div class="mt-15">'+LNG['fileMissingExport.stat.recent']+'</div>\
 			<div class="recent-list"></div>';
 	};
@@ -88,6 +100,7 @@
 
 	var applyState = function(data){
 		if (!data) return;
+		lastState = data;
 		var $el = $box();
 		fillStorage(data.storageList || [], data.ioType);
 		$el.find('.opt-recycle').prop('checked', data.includeRecycle != 0);
@@ -96,25 +109,35 @@
 		$el.find('.status-text').text(data.statusText || data.status || '');
 		$el.find('.status-text').attr('class', 'status-tag status-text status-'+(data.status || 'idle'));
 		var percent = data.percent || 0;
+		if (data.cleanStatus == 'running' || data.cleanStatus == 'paused' || data.cleanStatus == 'done') {
+			percent = data.cleanPercent || percent;
+		}
 		$el.find('.percent-text').text(percent + '%');
 		$el.find('.progress-bar span').css('width', percent + '%');
 		$el.find('.v-scanned').text(data.scanned || 0);
 		$el.find('.v-missing').text(data.missing || 0);
 		$el.find('.v-total').text(data.total || 0);
 		$el.find('.v-runid').text(data.runId || '-');
+		$el.find('.v-csource').text(data.cleanDeletedSource || 0);
+		$el.find('.v-cfile').text(data.cleanDeletedFile || 0);
+		$el.find('.v-cskip').text(data.cleanSkipped || 0);
+		$el.find('.clean-status-text').text(data.cleanStatusText || LNG['fileMissingExport.clean.status.idle']);
 		renderRecent(data.recent || []);
-		$el.find('.opt-ioType,.opt-recycle,.opt-history,.opt-batch').prop('disabled', data.status == 'running');
+		var busy = data.status == 'running' || data.cleanStatus == 'running';
+		$el.find('.opt-ioType,.opt-recycle,.opt-history,.opt-batch').prop('disabled', busy);
+		$el.find('.act-clean').prop('disabled', !data.canClean);
+		$el.find('.act-clean-continue').prop('disabled', !data.canCleanContinue);
 	};
 
 	var loopRun = function(){
-		if (!looping) return;
+		if (looping != 'scan') return;
 		kodApi.requestSend('plugin/fileMissingExport/run', {}, function(result){
 			if (!result || !result.code) {
 				looping = false;
 				return Tips.close(result);
 			}
 			applyState(result.data);
-			if (_.get(result, 'data.status') == 'running' && looping) {
+			if (_.get(result, 'data.status') == 'running' && looping == 'scan') {
 				setTimeout(loopRun, 30);
 				return;
 			}
@@ -123,11 +146,28 @@
 		});
 	};
 
+	var loopClean = function(){
+		if (looping != 'clean') return;
+		kodApi.requestSend('plugin/fileMissingExport/clean', {resume: 2}, function(result){
+			if (!result || !result.code) {
+				looping = false;
+				return Tips.close(result);
+			}
+			applyState(result.data);
+			if (_.get(result, 'data.cleanStatus') == 'running' && looping == 'clean') {
+				setTimeout(loopClean, 30);
+				return;
+			}
+			looping = false;
+			if (_.get(result, 'data.cleanStatus') == 'done') Tips.tips(LNG['fileMissingExport.clean.done'], 'success');
+		});
+	};
+
 	var start = function(reset, isContinue){
 		var data = options();
 		data.reset = reset ? 1 : 0;
 		if (isContinue) data.reset = 0;
-		looping = true;
+		looping = 'scan';
 		kodApi.requestSend('plugin/fileMissingExport/start', data, function(result){
 			if (!result || !result.code) {
 				looping = false;
@@ -138,13 +178,56 @@
 		});
 	};
 
+	var startClean = function(resume){
+		if (resume) {
+			looping = 'clean';
+			kodApi.requestSend('plugin/fileMissingExport/clean', {resume: 1}, function(result){
+				if (!result || !result.code) {
+					looping = false;
+					return Tips.close(result);
+				}
+				applyState(result.data);
+				loopClean();
+			});
+			return;
+		}
+		var missing = parseInt(_.get(lastState, 'missing', 0), 10) || 0;
+		var runId = _.get(lastState, 'runId', '');
+		var warn = (LNG['fileMissingExport.clean.warn'] || '').replace('[0]', missing);
+		$.dialog.confirm(warn, function(){
+			$.dialog.prompt(LNG['fileMissingExport.clean.prompt'], function(text){
+				if ($.trim(text) !== 'DELETE') {
+					Tips.tips(LNG['fileMissingExport.clean.confirmErr'], 'warning');
+					return false;
+				}
+				looping = 'clean';
+				kodApi.requestSend('plugin/fileMissingExport/clean', {
+					resume: 0,
+					runId: runId,
+					confirm: 'DELETE',
+					confirmCount: missing
+				}, function(result){
+					if (!result || !result.code) {
+						looping = false;
+						return Tips.close(result);
+					}
+					applyState(result.data);
+					loopClean();
+				});
+			});
+		});
+	};
+
 	var refreshStatus = function(){
 		kodApi.requestSend('plugin/fileMissingExport/status', {}, function(result){
 			if (!result || !result.code) return;
 			applyState(result.data);
 			if (_.get(result, 'data.status') == 'running') {
-				looping = true;
+				looping = 'scan';
 				loopRun();
+			} else if (_.get(result, 'data.cleanStatus') == 'running') {
+				looping = 'clean';
+				loopClean();
 			}
 		});
 	};
@@ -185,6 +268,14 @@
 	$('body').delegate('.file-missing-export-page .act-txt', 'click', function(e){
 		e.preventDefault();
 		window.open(G.kod.appApi + 'plugin/fileMissingExport/download&type=txt');
+	});
+	$('body').delegate('.file-missing-export-page .act-clean', 'click', function(e){
+		e.preventDefault();
+		startClean(false);
+	});
+	$('body').delegate('.file-missing-export-page .act-clean-continue', 'click', function(e){
+		e.preventDefault();
+		startClean(true);
 	});
 
 	Events.bind('plugin.config.formAfter', function(_this){

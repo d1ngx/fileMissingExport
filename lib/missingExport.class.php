@@ -33,7 +33,17 @@ class missingExport{
 			unset($state['lockPid']);
 			$state['csvExists'] = !empty($state['csvFile']) && @is_file($state['csvFile']);
 			$state['txtExists'] = !empty($state['txtFile']) && @is_file($state['txtFile']);
+			$state['jsonlExists'] = !empty($state['jsonlFile']) && @is_file($state['jsonlFile']);
 			$state['statusText'] = LNG('fileMissingExport.status.'.$state['status']);
+			$cleanStatus = _get($state, 'cleanStatus', 'idle');
+			$state['cleanStatus'] = $cleanStatus ? $cleanStatus : 'idle';
+			$state['cleanStatusText'] = LNG('fileMissingExport.clean.status.'.$state['cleanStatus']);
+			$state['canClean'] = ($state['status'] == 'done' && intval($state['missing']) > 0 && $state['jsonlExists'] && ($state['cleanStatus'] == 'idle' || $state['cleanStatus'] == ''));
+			$state['canCleanContinue'] = ($state['cleanStatus'] == 'paused');
+			$cleanTotal = intval(_get($state, 'cleanTotal', $state['missing']));
+			$cleanDone = intval(_get($state, 'cleanProcessed', 0));
+			$state['cleanPercent'] = $cleanTotal > 0 ? round($cleanDone / $cleanTotal * 100, 2) : 0;
+			if ($state['cleanPercent'] > 100) $state['cleanPercent'] = 100;
 			if ($state['total'] > 0) {
 				$state['percent'] = round($state['scanned'] / $state['total'] * 100, 2);
 				if ($state['percent'] > 100) $state['percent'] = 100;
@@ -66,7 +76,14 @@ class missingExport{
 
 	public function stop(){
 		$state = $this->loadState();
-		if (!$state || $state['status'] == 'done' || $state['status'] == 'idle') {
+		if (!$state) return $this->state();
+		if (_get($state, 'cleanStatus') == 'running') {
+			$state['cleanStatus'] = 'paused';
+			$state['heartbeat'] = time();
+			$this->saveState($state);
+			return $this->state();
+		}
+		if ($state['status'] == 'done' || $state['status'] == 'idle') {
 			return $this->state();
 		}
 		$state['status'] = 'paused';
@@ -123,6 +140,110 @@ class missingExport{
 		return $this->state();
 	}
 
+	public function cleanStart(){
+		$state = $this->loadState();
+		if (!$state) show_json(LNG('fileMissingExport.msg.noTask'), false);
+		if ($state['status'] == 'running' || $this->isAlive($state)) {
+			show_json(LNG('fileMissingExport.msg.running'), false);
+		}
+		$resume = intval(_get($this->plugin->in, 'resume', 0));
+		if ($resume) {
+			if (_get($state, 'cleanStatus') != 'paused') {
+				show_json(LNG('fileMissingExport.clean.needScan'), false);
+			}
+			$state['cleanStatus'] = 'running';
+			$state['heartbeat'] = time();
+			$this->saveState($state);
+			return $this->cleanSlice();
+		}
+
+		if ($state['status'] != 'done') {
+			show_json(LNG('fileMissingExport.clean.needScan'), false);
+		}
+		if (intval($state['missing']) <= 0) {
+			show_json(LNG('fileMissingExport.clean.empty'), false);
+		}
+		$jsonl = _get($state, 'jsonlFile');
+		if (!$jsonl || !is_file($jsonl)) {
+			show_json(LNG('fileMissingExport.clean.needScan'), false);
+		}
+		$runId = strval(_get($this->plugin->in, 'runId', ''));
+		$confirm = strval(_get($this->plugin->in, 'confirm', ''));
+		$confirmCount = intval(_get($this->plugin->in, 'confirmCount', 0));
+		if ($runId === '' || $runId !== strval($state['runId'])) {
+			show_json(LNG('fileMissingExport.clean.runIdErr'), false);
+		}
+		if ($confirm !== 'DELETE') {
+			show_json(LNG('fileMissingExport.clean.confirmErr'), false);
+		}
+		if ($confirmCount !== intval($state['missing'])) {
+			show_json(LNG('fileMissingExport.clean.countErr'), false);
+		}
+		if (_get($state, 'cleanStatus') == 'done') {
+			show_json(LNG('fileMissingExport.clean.already'), false);
+		}
+
+		$state['cleanStatus'] = 'running';
+		$state['cleanByte'] = 0;
+		$state['cleanProcessed'] = 0;
+		$state['cleanTotal'] = intval($state['missing']);
+		$state['cleanDeletedSource'] = 0;
+		$state['cleanDeletedFile'] = 0;
+		$state['cleanDeletedHistory'] = 0;
+		$state['cleanSkipped'] = 0;
+		$state['cleanStartedAt'] = time();
+		$state['heartbeat'] = time();
+		$this->saveState($state);
+		$this->cleanLog($state, 'START runId='.$state['runId'].' missing='.$state['missing']);
+		return $this->cleanSlice();
+	}
+
+	public function cleanSlice(){
+		$state = $this->loadState();
+		if (!$state) show_json(LNG('fileMissingExport.msg.noTask'), false);
+		if (_get($state, 'cleanStatus') == 'paused') return $this->state();
+		if (_get($state, 'cleanStatus') == 'done') return $this->state();
+		if (_get($state, 'cleanStatus') != 'running') {
+			show_json(LNG('fileMissingExport.clean.needScan'), false);
+		}
+
+		$state['heartbeat'] = time();
+		$this->saveState($state);
+		$this->storeMap = $this->loadStores();
+		$deadline = microtime(true) + $this->sliceSec;
+		$batch = intval(_get($state, 'batch', 100));
+		if ($batch < 20) $batch = 20;
+		if ($batch > 400) $batch = 400;
+
+		try {
+			while (microtime(true) < $deadline) {
+				$fresh = $this->loadState();
+				if ($fresh && _get($fresh, 'cleanStatus') == 'paused') {
+					$state = $fresh;
+					break;
+				}
+				$rows = $this->readJsonlBatch($state, $batch);
+				if (!$rows) {
+					$state['cleanStatus'] = 'done';
+					$state['cleanFinishedAt'] = time();
+					$this->cleanLog($state, 'DONE source='.intval($state['cleanDeletedSource']).' file='.intval($state['cleanDeletedFile']).' history='.intval($state['cleanDeletedHistory']).' skip='.intval($state['cleanSkipped']));
+					$this->saveState($state);
+					break;
+				}
+				$this->cleanRows($rows, $state);
+				$state['heartbeat'] = time();
+				$state['updatedAt'] = time();
+				$this->saveState($state);
+			}
+		} catch (Exception $e) {
+			$state['cleanStatus'] = 'paused';
+			$state['error'] = $e->getMessage();
+			$this->saveState($state);
+			show_json($e->getMessage(), false);
+		}
+		return $this->state();
+	}
+
 	public function download($type){
 		$state = $this->loadState();
 		if (!$state) show_json(LNG('fileMissingExport.msg.none'), false);
@@ -158,6 +279,7 @@ class missingExport{
 		@mk_dir($runDir);
 		$csvFile = $runDir.'missing-files.csv';
 		$txtFile = $runDir.'missing-files.txt';
+		$jsonlFile = $runDir.'missing-ids.jsonl';
 
 		$total = $this->countTotal($includeRecycle, $includeHistory);
 		$state = array(
@@ -175,12 +297,21 @@ class missingExport{
 			'batch'				=> $batch,
 			'csvFile'			=> $csvFile,
 			'txtFile'			=> $txtFile,
+			'jsonlFile'			=> $jsonlFile,
 			'recent'			=> array(),
 			'error'				=> '',
 			'startedAt'			=> time(),
 			'updatedAt'			=> time(),
 			'heartbeat'			=> time(),
 			'finishedAt'		=> 0,
+			'cleanStatus'		=> 'idle',
+			'cleanByte'			=> 0,
+			'cleanProcessed'	=> 0,
+			'cleanTotal'		=> 0,
+			'cleanDeletedSource'=> 0,
+			'cleanDeletedFile'	=> 0,
+			'cleanDeletedHistory'=> 0,
+			'cleanSkipped'		=> 0,
 		);
 		$this->writeCsvHeader($csvFile);
 		$this->writeTxtHeader($txtFile, $state);
@@ -227,7 +358,7 @@ class missingExport{
 		if (!$state['includeRecycle']) $where['isDelete'] = 0;
 		return Model('Source')
 			->where($where)
-			->field('sourceID,name,fileID,parentLevel,targetType,targetID,isDelete,size,createTime,modifyTime')
+			->field('sourceID,name,fileID,parentID,parentLevel,targetType,targetID,isDelete,size,createTime,modifyTime')
 			->order('sourceID asc')
 			->limit($this->pageNum)
 			->select();
@@ -274,7 +405,7 @@ class missingExport{
 		if ($sourceIds) {
 			$sourceIds = array_values(array_unique($sourceIds));
 			$sources = Model('Source')->where(array('sourceID' => array('in', $sourceIds)))
-				->field('sourceID,name,fileID,parentLevel,targetType,targetID,isDelete,size,createTime,modifyTime')
+				->field('sourceID,name,fileID,parentID,parentLevel,targetType,targetID,isDelete,size,createTime,modifyTime')
 				->select();
 			$sourceMap = array_to_keyvalue($sources, 'sourceID');
 		}
@@ -299,6 +430,7 @@ class missingExport{
 				'sourceID' => $item['sourceID'],
 				'name' => '',
 				'fileID' => $item['fileID'],
+				'parentID' => 0,
 				'parentLevel' => '',
 				'targetType' => '',
 				'targetID' => 0,
@@ -372,6 +504,7 @@ class missingExport{
 			'sourceID'		=> intval($source['sourceID']),
 			'fileID'		=> intval($source['fileID']),
 			'historyID'		=> intval(_get($source, 'historyID', 0)),
+			'parentID'		=> intval(_get($source, 'parentID', 0)),
 			'isDelete'		=> intval(_get($source, 'isDelete', 0)),
 			'kind'			=> $kind,
 			'kindText'		=> LNG($kind == 'history' ? 'fileMissingExport.kind.history' : 'fileMissingExport.kind.file'),
@@ -460,6 +593,15 @@ class missingExport{
 			if ($txt) fclose($txt);
 			throw new Exception('cannot write result file');
 		}
+		$jsonl = false;
+		if (!empty($state['jsonlFile'])) {
+			$jsonl = fopen($state['jsonlFile'], 'ab');
+			if (!$jsonl) {
+				fclose($csv);
+				fclose($txt);
+				throw new Exception('cannot write result file');
+			}
+		}
 		foreach ($rows as $row) {
 			$state['missing']++;
 			$idx = $state['missing'];
@@ -483,6 +625,18 @@ class missingExport{
 				$row['modifyTime'] ? date('Y-m-d H:i:s', $row['modifyTime']) : '',
 				$row['createTime'] ? date('Y-m-d H:i:s', $row['createTime']) : '',
 			));
+			if ($jsonl) {
+				$line = json_encode(array(
+					'kind' => $row['kind'],
+					'sourceID' => $row['sourceID'],
+					'fileID' => $row['fileID'],
+					'historyID' => $row['historyID'],
+					'parentID' => intval(_get($row, 'parentID', 0)),
+					'reason' => $row['reason'],
+					'storePath' => $row['storePath'],
+				), defined('JSON_UNESCAPED_UNICODE') ? JSON_UNESCAPED_UNICODE : 0);
+				fwrite($jsonl, $line."\n");
+			}
 			$block = '#'.$idx.'  '.$row['pathDisplay']."\n";
 			$block .= '    '.$this->pad('文件名', $row['name']).$this->pad('大小', $row['sizeText'])."\n";
 			$block .= '    '.$this->pad('空间', $row['spaceType'].' / '.$row['spaceName']).$this->pad('类型', $row['kindText'])."\n";
@@ -504,6 +658,7 @@ class missingExport{
 		}
 		fclose($csv);
 		fclose($txt);
+		if ($jsonl) fclose($jsonl);
 		if (count($state['recent']) > 40) {
 			$state['recent'] = array_slice($state['recent'], -40);
 		}
@@ -561,6 +716,163 @@ class missingExport{
 		file_put_contents($state['txtFile'], implode("\n", $lines)."\n", FILE_APPEND);
 	}
 
+	private function readJsonlBatch(&$state, $limit){
+		$file = _get($state, 'jsonlFile');
+		if (!$file || !is_file($file)) return array();
+		$fp = fopen($file, 'rb');
+		if (!$fp) return array();
+		$byte = intval(_get($state, 'cleanByte', 0));
+		if ($byte > 0) fseek($fp, $byte);
+		$rows = array();
+		while (count($rows) < $limit && ($line = fgets($fp)) !== false) {
+			$line = trim($line);
+			if ($line === '') continue;
+			$item = json_decode($line, true);
+			if (is_array($item)) $rows[] = $item;
+		}
+		$state['cleanByte'] = ftell($fp);
+		$eof = feof($fp);
+		fclose($fp);
+		if (!$rows && $eof) return array();
+		return $rows;
+	}
+
+	private function cleanRows($rows, &$state){
+		foreach ($rows as $row) {
+			$state['cleanProcessed'] = intval(_get($state, 'cleanProcessed', 0)) + 1;
+			$reason = _get($row, 'reason', '');
+			if ($reason === 'storageErr') {
+				$state['cleanSkipped']++;
+				$this->cleanLog($state, 'SKIP storageErr sourceID='.intval(_get($row,'sourceID',0)));
+				continue;
+			}
+			$fileID = intval(_get($row, 'fileID', 0));
+			$sourceID = intval(_get($row, 'sourceID', 0));
+			$historyID = intval(_get($row, 'historyID', 0));
+			$kind = _get($row, 'kind', 'file');
+			$storePath = _get($row, 'storePath', '');
+
+			if ($reason === 'physical' && $storePath) {
+				try {
+					if (IO::exist($storePath)) {
+						$state['cleanSkipped']++;
+						$this->cleanLog($state, 'SKIP restored '.$storePath);
+						continue;
+					}
+				} catch (Exception $e) {
+					$state['cleanSkipped']++;
+					$this->cleanLog($state, 'SKIP exist-error '.$storePath.' '.$e->getMessage());
+					continue;
+				}
+			}
+
+			if ($kind === 'history' && $historyID > 0) {
+				$cnt = Model('SourceHistory')->where(array('id' => $historyID))->delete();
+				$state['cleanDeletedHistory'] += intval($cnt);
+				if ($fileID > 0) $this->deleteOrphanFile($fileID, $state);
+				continue;
+			}
+
+			if ($fileID > 0 && $reason !== 'fileMissing') {
+				$this->deleteByFileID($fileID, $state);
+				continue;
+			}
+			if ($sourceID > 0) {
+				$this->deleteBySourceID($sourceID, $state);
+			} else {
+				$state['cleanSkipped']++;
+			}
+		}
+	}
+
+	private function deleteByFileID($fileID, &$state){
+		$where = array('fileID' => $fileID);
+		$modelSource = Model('Source');
+		$sourceList = $modelSource->where($where)->select();
+		$sourceList = $sourceList ? $sourceList : array();
+		if (!$sourceList && !Model('File')->where($where)->find() && !Model('SourceHistory')->where($where)->find()) {
+			$state['cleanSkipped']++;
+			return;
+		}
+		$sourceIds = array();
+		$parents = array();
+		foreach ($sourceList as $item) {
+			$sourceIds[] = intval($item['sourceID']);
+			$parents[] = intval($item['parentID']);
+		}
+		$this->deleteShares($sourceIds);
+		if ($sourceIds) {
+			Model('SourceRecycle')->where(array('sourceID' => array('in', $sourceIds)))->delete();
+		}
+		$cntSource = $modelSource->where($where)->delete();
+		$cntHistory = Model('SourceHistory')->where($where)->delete();
+		Model('io_file_meta')->where($where)->delete();
+		Model('io_file_contents')->where($where)->delete();
+		Model('share_report')->where($where)->delete();
+		$cntFile = Model('File')->where($where)->delete();
+		$state['cleanDeletedSource'] += intval($cntSource);
+		$state['cleanDeletedHistory'] += intval($cntHistory);
+		$state['cleanDeletedFile'] += intval($cntFile);
+		$this->folderSizeReset($parents);
+		$this->cleanLog($state, 'DEL fileID='.$fileID.' source='.intval($cntSource).' history='.intval($cntHistory).' file='.intval($cntFile));
+	}
+
+	private function deleteBySourceID($sourceID, &$state){
+		$info = Model('Source')->where(array('sourceID' => $sourceID))->find();
+		if (!$info) {
+			$state['cleanSkipped']++;
+			return;
+		}
+		$this->deleteShares(array($sourceID));
+		Model('SourceRecycle')->where(array('sourceID' => $sourceID))->delete();
+		$fileID = intval($info['fileID']);
+		$cnt = Model('Source')->where(array('sourceID' => $sourceID))->delete();
+		$state['cleanDeletedSource'] += intval($cnt);
+		if ($fileID > 0) $this->deleteOrphanFile($fileID, $state);
+		$this->folderSizeReset(array(intval($info['parentID'])));
+		$this->cleanLog($state, 'DEL sourceID='.$sourceID);
+	}
+
+	private function deleteOrphanFile($fileID, &$state){
+		$where = array('fileID' => $fileID);
+		if (Model('Source')->where($where)->find()) return;
+		if (Model('SourceHistory')->where($where)->find()) return;
+		Model('io_file_meta')->where($where)->delete();
+		Model('io_file_contents')->where($where)->delete();
+		Model('share_report')->where($where)->delete();
+		$cnt = Model('File')->where($where)->delete();
+		$state['cleanDeletedFile'] += intval($cnt);
+	}
+
+	private function deleteShares($sourceIds){
+		$sourceIds = array_values(array_filter(array_unique($sourceIds)));
+		if (!$sourceIds) return;
+		$list = Model('Share')->where(array('sourceID' => array('in', $sourceIds)))->select();
+		if ($list) {
+			$shareIds = array_to_keyvalue($list, '', 'shareID');
+			if ($shareIds) {
+				Model('share_to')->where(array('shareID' => array('in', $shareIds)))->delete();
+			}
+		}
+		Model('Share')->where(array('sourceID' => array('in', $sourceIds)))->delete();
+	}
+
+	private function folderSizeReset($parentSource){
+		$model = Model('Source');
+		$parentSource = array_filter(array_unique($parentSource));
+		foreach ($parentSource as $sourceID) {
+			if (intval($sourceID) > 0) $model->folderSizeReset($sourceID);
+		}
+	}
+
+	private function cleanLog($state, $msg){
+		$dir = '';
+		if (!empty($state['csvFile'])) $dir = dirname($state['csvFile']);
+		if (!$dir) return;
+		$line = date('Y-m-d H:i:s').' '.$msg."\n";
+		file_put_contents($dir.'/clean-log.txt', $line, FILE_APPEND);
+	}
+
 	private function loadStores(){
 		$list = Model('Storage')->listData();
 		$map = array();
@@ -600,6 +912,7 @@ class missingExport{
 			'batch' => 300,
 			'csvFile' => '',
 			'txtFile' => '',
+			'jsonlFile' => '',
 			'recent' => array(),
 			'error' => '',
 			'startedAt' => 0,
@@ -608,7 +921,15 @@ class missingExport{
 			'finishedAt' => 0,
 			'csvExists' => false,
 			'txtExists' => false,
+			'jsonlExists' => false,
 			'statusText' => LNG('fileMissingExport.status.idle'),
+			'cleanStatus' => 'idle',
+			'cleanDeletedSource' => 0,
+			'cleanDeletedFile' => 0,
+			'cleanDeletedHistory' => 0,
+			'cleanSkipped' => 0,
+			'cleanProcessed' => 0,
+			'canClean' => false,
 		);
 	}
 
