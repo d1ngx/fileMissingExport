@@ -1,0 +1,71 @@
+.app-config-fileMissingExport .dialog-form,
+.file-missing-export-config{min-width: 720px;}
+.file-missing-export-page{
+	max-width: 980px;
+	padding: 4px 0 8px;
+	text-align: left;
+}
+.file-missing-export-page .desc-box li{line-height: 1.7;}
+.file-missing-export-page .opt-row{
+	display: flex;
+	flex-wrap: wrap;
+	gap: 16px 24px;
+	align-items: center;
+	margin: 16px 0;
+}
+.file-missing-export-page .opt-item label{margin-right: 8px;color: #666;}
+.file-missing-export-page .opt-item select,
+.file-missing-export-page .opt-item input[type=number]{
+	min-width: 160px;
+	height: 30px;
+	padding: 0 8px;
+}
+.file-missing-export-page .btn-row{margin: 12px 0 18px;}
+.file-missing-export-page .btn-row .kui-btn{margin-right: 8px;margin-bottom: 8px;}
+.file-missing-export-page .stat-grid{
+	display: grid;
+	grid-template-columns: repeat(4, minmax(120px, 1fr));
+	gap: 12px;
+	margin: 12px 0;
+}
+.file-missing-export-page .stat-card{
+	background: #f7f8fa;
+	border-radius: 6px;
+	padding: 12px 14px;
+}
+.file-missing-export-page .stat-card .k{color: #888;font-size: 12px;}
+.file-missing-export-page .stat-card .v{font-size: 20px;margin-top: 6px;font-weight: 600;}
+.file-missing-export-page .progress-bar{
+	height: 10px;
+	background: #eee;
+	border-radius: 6px;
+	overflow: hidden;
+}
+.file-missing-export-page .progress-bar span{
+	display: block;
+	height: 100%;
+	background: #3b82f6;
+	width: 0;
+}
+.file-missing-export-page .recent-list{
+	margin-top: 8px;
+	max-height: 280px;
+	overflow: auto;
+	border: 1px solid #eee;
+	border-radius: 6px;
+	background: #fff;
+}
+.file-missing-export-page .recent-list .row{
+	padding: 8px 12px;
+	border-bottom: 1px solid #f3f3f3;
+	font-size: 13px;
+	line-height: 1.5;
+}
+.file-missing-export-page .recent-list .row:last-child{border-bottom: 0;}
+.file-missing-export-page .recent-list .path{word-break: break-all;}
+.file-missing-export-page .recent-list .meta{color: #888;margin-top: 2px;}
+.file-missing-export-page .status-tag{font-weight: 600;}
+.file-missing-export-page .status-running{color: #2563eb;}
+.file-missing-export-page .status-done{color: #16a34a;}
+.file-missing-export-page .status-paused{color: #d97706;}
+.file-missing-export-page .status-error{color: #dc2626;}

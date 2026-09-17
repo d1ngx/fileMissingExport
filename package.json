@@ -1,0 +1,39 @@
+{
+	"id":"fileMissingExport",
+	"name":"{{LNG['fileMissingExport.meta.name']}}",
+	"title":"{{LNG['fileMissingExport.meta.title']}}",
+	"version":"1.1",
+	"category":"tools",
+	"source":{
+		"className":"font-icon ri-file-damage-line bg-orange-6"
+	},
+	"description":"{{LNG['fileMissingExport.meta.desc']}}",
+	"auther":{
+		"copyright":"kodcloud.",
+		"homePage":"http://www.kodcloud.com"
+	},
+	"configItem":{
+		"formStyle":{
+			"className":"form-box-title-block file-missing-export-config",
+			"loadFile":"{{pluginHost}}static/page.js"
+		},
+		"pluginAuth":{
+			"type":"userSelect",
+			"value":{"user":1},
+			"className":"hidden",
+			"display":"{{LNG['admin.plugin.auth']}}",
+			"desc":"{{LNG['admin.plugin.authDesc']}}",
+			"require":1
+		},
+		"sep001":{
+			"type":"html",
+			"display":"",
+			"value":"<div class='info-alert info-alert-blue p-10 align-left can-select can-right-menu'>{{LNG['fileMissingExport.meta.tips']}}</div>"
+		},
+		"exportPanel":{
+			"type":"html",
+			"display":"",
+			"value":"<div class='file-missing-export-page'></div>"
+		}
+	}
+}
