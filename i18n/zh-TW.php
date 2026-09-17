@@ -26,6 +26,7 @@ return array(
 	'fileMissingExport.stat.cleanSource'	=> "已刪網盤記錄",
 	'fileMissingExport.stat.cleanFile'		=> "已刪儲存記錄",
 	'fileMissingExport.stat.cleanSkip'		=> "跳過",
+	'fileMissingExport.stat.cleanProcessed'	=> "已處理",
 
 	'fileMissingExport.menu.title'			=> "失效檔案匯出",
 	'fileMissingExport.page.desc'			=> "失效檔案：網盤資料庫中有記錄（列表可見），但對應儲存中找不到實體檔案。掃描依 sourceID 游標分批進行，中斷後可繼續。",

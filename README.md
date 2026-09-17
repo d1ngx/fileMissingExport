@@ -21,7 +21,7 @@ KodBox 插件：导出网盘中「数据库有记录、存储里找不到物理�
 
 百万级请保持设置窗口打开以自动续跑；关掉后点「继续」从断点恢复。
 
-结果目录：`data/temp/fileMissingExport/<runId>/`
+结果与日志目录：`data/temp/log/fileMissingExport/<runId>/`（`state.json`、导出文件、`clean-log.txt`）。
 
 ## 清理数据库（危险）
 

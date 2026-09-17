@@ -54,6 +54,7 @@
 				<button type="button" class="kui-btn kui-btn-red act-clean" disabled>'+LNG['fileMissingExport.btn.clean']+'</button>\
 				<button type="button" class="kui-btn act-clean-continue" disabled>'+LNG['fileMissingExport.btn.cleanContinue']+'</button>\
 				<div class="clean-stat mt-10"><span class="clean-status-text">'+LNG['fileMissingExport.clean.status.idle']+'</span> · \
+					'+LNG['fileMissingExport.stat.cleanProcessed']+' <span class="v-cdone">0</span>/<span class="v-ctotal">0</span> · \
 					'+LNG['fileMissingExport.stat.cleanSource']+' <span class="v-csource">0</span> · \
 					'+LNG['fileMissingExport.stat.cleanFile']+' <span class="v-cfile">0</span> · \
 					'+LNG['fileMissingExport.stat.cleanSkip']+' <span class="v-cskip">0</span>\
@@ -109,10 +110,12 @@
 		$el.find('.status-text').text(data.statusText || data.status || '');
 		$el.find('.status-text').attr('class', 'status-tag status-text status-'+(data.status || 'idle'));
 		var percent = data.percent || 0;
+		var percentLabel = percent + '%';
 		if (data.cleanStatus == 'running' || data.cleanStatus == 'paused' || data.cleanStatus == 'done') {
-			percent = data.cleanPercent || percent;
+			percent = data.cleanPercent || 0;
+			percentLabel = (data.cleanProcessed || 0) + ' / ' + (data.cleanTotal || data.missing || 0) + ' (' + percent + '%)';
 		}
-		$el.find('.percent-text').text(percent + '%');
+		$el.find('.percent-text').text(percentLabel);
 		$el.find('.progress-bar span').css('width', percent + '%');
 		$el.find('.v-scanned').text(data.scanned || 0);
 		$el.find('.v-missing').text(data.missing || 0);
@@ -121,6 +124,8 @@
 		$el.find('.v-csource').text(data.cleanDeletedSource || 0);
 		$el.find('.v-cfile').text(data.cleanDeletedFile || 0);
 		$el.find('.v-cskip').text(data.cleanSkipped || 0);
+		$el.find('.v-cdone').text(data.cleanProcessed || 0);
+		$el.find('.v-ctotal').text(data.cleanTotal || data.missing || 0);
 		$el.find('.clean-status-text').text(data.cleanStatusText || LNG['fileMissingExport.clean.status.idle']);
 		renderRecent(data.recent || []);
 		var busy = data.status == 'running' || data.cleanStatus == 'running';
@@ -178,9 +183,23 @@
 		});
 	};
 
+	var markCleaning = function(){
+		looping = 'clean';
+		var next = _.extend({}, lastState, {
+			cleanStatus: 'running',
+			cleanStatusText: LNG['fileMissingExport.clean.status.running'],
+			canClean: false,
+			canCleanContinue: false,
+			cleanProcessed: lastState.cleanProcessed || 0,
+			cleanTotal: lastState.cleanTotal || lastState.missing || 0,
+			cleanPercent: lastState.cleanPercent || 0
+		});
+		applyState(next);
+	};
+
 	var startClean = function(resume){
 		if (resume) {
-			looping = 'clean';
+			markCleaning();
 			kodApi.requestSend('plugin/fileMissingExport/clean', {resume: 1}, function(result){
 				if (!result || !result.code) {
 					looping = false;
@@ -200,7 +219,7 @@
 					Tips.tips(LNG['fileMissingExport.clean.confirmErr'], 'warning');
 					return false;
 				}
-				looping = 'clean';
+				markCleaning();
 				kodApi.requestSend('plugin/fileMissingExport/clean', {
 					resume: 0,
 					runId: runId,

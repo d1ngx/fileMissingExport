@@ -26,6 +26,7 @@ return array(
 	'fileMissingExport.stat.cleanSource'	=> "已删网盘记录",
 	'fileMissingExport.stat.cleanFile'		=> "已删存储记录",
 	'fileMissingExport.stat.cleanSkip'		=> "跳过",
+	'fileMissingExport.stat.cleanProcessed'	=> "已处理",
 
 	'fileMissingExport.menu.title'			=> "失效文件导出",
 	'fileMissingExport.page.desc'			=> "失效文件：网盘数据库中有记录（列表可见），但对应存储中找不到物理文件。扫描按 sourceID 游标分批进行，中断后可继续，不会漏扫或重复写入同一轮结果。",

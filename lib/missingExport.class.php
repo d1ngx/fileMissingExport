@@ -19,7 +19,13 @@ class missingExport{
 
 	public function __construct($plugin){
 		$this->plugin = $plugin;
-		$this->workDir = TEMP_PATH.'fileMissingExport/';
+		$logRoot = defined('LOG_PATH') ? LOG_PATH : TEMP_PATH.'log/';
+		$this->workDir = $logRoot.'fileMissingExport/';
+		$legacyDir = TEMP_PATH.'fileMissingExport/';
+		if (!is_dir($this->workDir) && is_dir($legacyDir)) {
+			@mk_dir($logRoot);
+			@rename($legacyDir, rtrim($this->workDir, '/'));
+		}
 		$this->stateFile = $this->workDir.'state.json';
 		@mk_dir($this->workDir);
 	}
@@ -154,7 +160,7 @@ class missingExport{
 			$state['cleanStatus'] = 'running';
 			$state['heartbeat'] = time();
 			$this->saveState($state);
-			return $this->cleanSlice();
+			return $this->state();
 		}
 
 		if ($state['status'] != 'done') {
@@ -195,7 +201,7 @@ class missingExport{
 		$state['heartbeat'] = time();
 		$this->saveState($state);
 		$this->cleanLog($state, 'START runId='.$state['runId'].' missing='.$state['missing']);
-		return $this->cleanSlice();
+		return $this->state();
 	}
 
 	public function cleanSlice(){
@@ -210,10 +216,10 @@ class missingExport{
 		$state['heartbeat'] = time();
 		$this->saveState($state);
 		$this->storeMap = $this->loadStores();
-		$deadline = microtime(true) + $this->sliceSec;
-		$batch = intval(_get($state, 'batch', 100));
-		if ($batch < 20) $batch = 20;
-		if ($batch > 400) $batch = 400;
+		$deadline = microtime(true) + 2;
+		$batch = 25;
+		$parents = array();
+		$did = 0;
 
 		try {
 			while (microtime(true) < $deadline) {
@@ -226,14 +232,20 @@ class missingExport{
 				if (!$rows) {
 					$state['cleanStatus'] = 'done';
 					$state['cleanFinishedAt'] = time();
+					$this->folderSizeReset($parents);
 					$this->cleanLog($state, 'DONE source='.intval($state['cleanDeletedSource']).' file='.intval($state['cleanDeletedFile']).' history='.intval($state['cleanDeletedHistory']).' skip='.intval($state['cleanSkipped']));
 					$this->saveState($state);
 					break;
 				}
-				$this->cleanRows($rows, $state);
+				$this->cleanRows($rows, $state, $parents);
+				$did += count($rows);
 				$state['heartbeat'] = time();
 				$state['updatedAt'] = time();
 				$this->saveState($state);
+				if ((microtime(true) >= $deadline) || $did >= 80) break;
+			}
+			if ($parents && _get($state, 'cleanStatus') != 'done') {
+				$this->folderSizeReset($parents);
 			}
 		} catch (Exception $e) {
 			$state['cleanStatus'] = 'paused';
@@ -737,13 +749,12 @@ class missingExport{
 		return $rows;
 	}
 
-	private function cleanRows($rows, &$state){
+	private function cleanRows($rows, &$state, &$parents){
 		foreach ($rows as $row) {
 			$state['cleanProcessed'] = intval(_get($state, 'cleanProcessed', 0)) + 1;
 			$reason = _get($row, 'reason', '');
 			if ($reason === 'storageErr') {
 				$state['cleanSkipped']++;
-				$this->cleanLog($state, 'SKIP storageErr sourceID='.intval(_get($row,'sourceID',0)));
 				continue;
 			}
 			$fileID = intval(_get($row, 'fileID', 0));
@@ -756,12 +767,10 @@ class missingExport{
 				try {
 					if (IO::exist($storePath)) {
 						$state['cleanSkipped']++;
-						$this->cleanLog($state, 'SKIP restored '.$storePath);
 						continue;
 					}
 				} catch (Exception $e) {
 					$state['cleanSkipped']++;
-					$this->cleanLog($state, 'SKIP exist-error '.$storePath.' '.$e->getMessage());
 					continue;
 				}
 			}
@@ -774,18 +783,18 @@ class missingExport{
 			}
 
 			if ($fileID > 0 && $reason !== 'fileMissing') {
-				$this->deleteByFileID($fileID, $state);
+				$this->deleteByFileID($fileID, $state, $parents);
 				continue;
 			}
 			if ($sourceID > 0) {
-				$this->deleteBySourceID($sourceID, $state);
+				$this->deleteBySourceID($sourceID, $state, $parents);
 			} else {
 				$state['cleanSkipped']++;
 			}
 		}
 	}
 
-	private function deleteByFileID($fileID, &$state){
+	private function deleteByFileID($fileID, &$state, &$parents){
 		$where = array('fileID' => $fileID);
 		$modelSource = Model('Source');
 		$sourceList = $modelSource->where($where)->select();
@@ -795,7 +804,6 @@ class missingExport{
 			return;
 		}
 		$sourceIds = array();
-		$parents = array();
 		foreach ($sourceList as $item) {
 			$sourceIds[] = intval($item['sourceID']);
 			$parents[] = intval($item['parentID']);
@@ -813,11 +821,9 @@ class missingExport{
 		$state['cleanDeletedSource'] += intval($cntSource);
 		$state['cleanDeletedHistory'] += intval($cntHistory);
 		$state['cleanDeletedFile'] += intval($cntFile);
-		$this->folderSizeReset($parents);
-		$this->cleanLog($state, 'DEL fileID='.$fileID.' source='.intval($cntSource).' history='.intval($cntHistory).' file='.intval($cntFile));
 	}
 
-	private function deleteBySourceID($sourceID, &$state){
+	private function deleteBySourceID($sourceID, &$state, &$parents){
 		$info = Model('Source')->where(array('sourceID' => $sourceID))->find();
 		if (!$info) {
 			$state['cleanSkipped']++;
@@ -829,8 +835,7 @@ class missingExport{
 		$cnt = Model('Source')->where(array('sourceID' => $sourceID))->delete();
 		$state['cleanDeletedSource'] += intval($cnt);
 		if ($fileID > 0) $this->deleteOrphanFile($fileID, $state);
-		$this->folderSizeReset(array(intval($info['parentID'])));
-		$this->cleanLog($state, 'DEL sourceID='.$sourceID);
+		$parents[] = intval($info['parentID']);
 	}
 
 	private function deleteOrphanFile($fileID, &$state){

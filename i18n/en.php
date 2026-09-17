@@ -26,6 +26,7 @@ return array(
 	'fileMissingExport.stat.cleanSource'	=> "Sources deleted",
 	'fileMissingExport.stat.cleanFile'		=> "File rows deleted",
 	'fileMissingExport.stat.cleanSkip'		=> "Skipped",
+	'fileMissingExport.stat.cleanProcessed'	=> "Processed",
 
 	'fileMissingExport.menu.title'			=> "Missing file export",
 	'fileMissingExport.page.desc'			=> "Missing file: the record exists in the database (visible in the drive) but the physical object is gone in storage. Scanning uses a sourceID cursor, so you can pause and resume without skipping or duplicating the same run.",
